@@ -45,7 +45,8 @@ data object MoreTab : Tab {
             val isSelected = LocalTabNavigator.current.current.key == key
             val image = AnimatedImageVector.animatedVectorResource(R.drawable.anim_more_enter)
             return TabOptions(
-                index = 4u,
+                // Index 5u: shifted up by 1 to accommodate the ComicDownloader tab at index 4u
+                index = 5u,
                 title = stringResource(MR.strings.label_more),
                 icon = rememberAnimatedVectorPainter(image, isSelected),
             )

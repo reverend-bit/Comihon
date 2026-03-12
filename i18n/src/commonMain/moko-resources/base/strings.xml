@@ -20,6 +20,23 @@
     <string name="history">History</string>
     <string name="scanlator">Scanlator</string>
 
+    <!-- Comic Downloader -->
+    <string name="label_comic_downloader">Comic Downloader</string>
+    <string name="label_comic_downloader_import">Import</string>
+    <string name="label_comic_downloader_reading_list">Reading List</string>
+    <string name="label_comic_downloader_queue">Queue</string>
+    <string name="label_comic_downloader_add_repo">Add Repository URL</string>
+    <string name="label_comic_downloader_saved_repos">Saved Repositories</string>
+    <string name="label_comic_downloader_select">Select</string>
+    <string name="label_comic_downloader_remove">Remove</string>
+    <string name="label_comic_downloader_select_cbl">Import CBL</string>
+    <string name="label_comic_downloader_no_reading_lists">No reading lists added yet</string>
+    <string name="label_comic_downloader_queue_empty">Download queue is empty</string>
+    <string name="label_comic_downloader_issues">issues</string>
+    <string name="label_comic_downloader_pick_file">Import CBL from device</string>
+    <string name="label_comic_downloader_or_repo">Or import from GitHub repository</string>
+    <string name="label_comic_downloader_no_cbl_files">No .cbl files found in this repository</string>
+
     <!-- Screen titles -->
     <string name="label_more">More</string>
     <string name="label_settings">Settings</string>
