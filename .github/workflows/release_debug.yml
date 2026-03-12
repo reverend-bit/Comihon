@@ -38,7 +38,7 @@ jobs:
 
       - name: Rename APK
         run: |
-          mv app/build/outputs/apk/debug/app-debug.apk comihon-debug.apk
+          mv app/build/outputs/apk/debug/app-universal-debug.apk comihon-debug.apk
 
       - name: Create or update GitHub Release
         uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2.5.0
