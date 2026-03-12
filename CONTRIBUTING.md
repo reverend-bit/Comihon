@@ -22,6 +22,7 @@ Before you start, please note that the ability to use following technologies is 
 ### Tools
 
 - [Android Studio](https://developer.android.com/studio)
+  - When prompted, install the Android SDK version that Android Studio requests. The required version is determined by the project's `compileSdk` (see [`buildSrc/src/main/kotlin/mihon/buildlogic/AndroidConfig.kt`](./buildSrc/src/main/kotlin/mihon/buildlogic/AndroidConfig.kt)).
 - Emulator or phone with developer options enabled to test changes.
 
 ## Getting help
