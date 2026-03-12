@@ -96,10 +96,11 @@ private fun ImportTabContent(
                 label = { Text(stringResource(MR.strings.label_comic_downloader_add_repo)) },
                 modifier = Modifier.weight(1f),
                 singleLine = true,
+                isError = newRepoUrl.isNotBlank() && !newRepoUrl.startsWith("https://github.com"),
             )
             IconButton(
                 onClick = {
-                    if (newRepoUrl.isNotBlank()) {
+                    if (newRepoUrl.startsWith("https://github.com")) {
                         onAddRepository(newRepoUrl)
                         newRepoUrl = ""
                     }

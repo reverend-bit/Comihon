@@ -3,13 +3,15 @@ package eu.kanade.tachiyomi.ui.comicdownloader
 import android.content.Context
 import android.util.Log
 import eu.kanade.domain.manga.interactor.UpdateManga
-import eu.kanade.tachiyomi.source.AndroidSourceManager
 import eu.kanade.tachiyomi.source.CatalogueSource
 import eu.kanade.tachiyomi.source.model.FilterList
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.HttpSource
 import kotlinx.coroutines.delay
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import mihon.domain.manga.model.toDomainManga
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -20,6 +22,7 @@ import tachiyomi.domain.chapter.model.Chapter
 import tachiyomi.domain.chapter.repository.ChapterRepository
 import tachiyomi.domain.manga.interactor.NetworkToLocalManga
 import tachiyomi.domain.manga.model.MangaUpdate
+import tachiyomi.domain.source.service.SourceManager
 import tachiyomi.domain.storage.service.StorageManager
 import tachiyomi.source.local.LocalSource
 import uy.kohesive.injekt.Injekt
@@ -32,6 +35,9 @@ import javax.xml.parsers.DocumentBuilderFactory
 import kotlin.math.abs
 
 private const val TAG = "ComicDownloader"
+private const val BASE_SCAN_DELAY_MS = 500L
+private const val SCAN_DEPTH_INCREMENT_MS = 200L
+private const val MAX_SCAN_DEPTH = 5
 
 data class ComicBook(
     val series: String,
@@ -111,6 +117,17 @@ class RepoManager(context: Context) {
         val importedAt: String,
     )
 
+    // Use a simple JSON format for persistence compatible with kotlinx.serialization
+    @Serializable
+    private data class SavedCBLEntry(
+        val fileName: String,
+        val repoUrl: String,
+        val folderName: String,
+        val importedAt: String,
+    )
+
+    private val json: Json = Injekt.get()
+
     private fun loadRepos(): List<String> {
         return try {
             if (savedReposFile.exists()) {
@@ -129,8 +146,8 @@ class RepoManager(context: Context) {
     private fun loadImportedCbls(): Map<String, CBLImportData> {
         return try {
             if (importedCblsFile.exists()) {
-                // TODO: replace with proper kotlinx.serialization deserialization
-                emptyMap()
+                val entries = json.decodeFromString<List<SavedCBLEntry>>(importedCblsFile.readText())
+                entries.associate { it.fileName to CBLImportData(it.repoUrl, it.folderName, it.importedAt) }
             } else {
                 emptyMap()
             }
@@ -142,8 +159,8 @@ class RepoManager(context: Context) {
 
     fun saveRepos() {
         try {
-            val json = "[" + savedRepos.joinToString(",") { "\"$it\"" } + "]"
-            savedReposFile.writeText(json)
+            val serialized = savedRepos.joinToString(",") { "\"$it\"" }
+            savedReposFile.writeText("[$serialized]")
         } catch (e: Exception) {
             Log.e(TAG, "Error saving repos", e)
         }
@@ -151,8 +168,10 @@ class RepoManager(context: Context) {
 
     fun saveImportedCbls() {
         try {
-            // TODO: replace with proper kotlinx.serialization serialization
-            importedCblsFile.writeText(importedCbls.toString())
+            val entries = importedCbls.entries.map { (fileName, data) ->
+                SavedCBLEntry(fileName, data.repoUrl, data.folderName, data.importedAt)
+            }
+            importedCblsFile.writeText(json.encodeToString(entries))
         } catch (e: Exception) {
             Log.e(TAG, "Error saving imported CBLs", e)
         }
@@ -207,7 +226,7 @@ class RepoManager(context: Context) {
     ) {
         try {
             if (depth > 0) {
-                delay((500 + (depth * 200)).toLong())
+                delay(BASE_SCAN_DELAY_MS + (depth * SCAN_DEPTH_INCREMENT_MS))
             }
 
             val request = Request.Builder().url(apiUrl).build()
@@ -239,7 +258,7 @@ class RepoManager(context: Context) {
                         collector[name] = path
                         Log.d(TAG, "Found CBL file: $name at $path")
                     }
-                    type == "dir" && depth < 5 -> {
+                    type == "dir" && depth < MAX_SCAN_DEPTH -> {
                         val subUrl = apiUrl.trimEnd('/') + '/' + name
                         scanDirectory(subUrl, collector, depth + 1)
                     }
@@ -319,7 +338,7 @@ class RepoManager(context: Context) {
 /**
  * Searches installed Mihon sources for a matching manga series.
  */
-class MihonComicSearcher(private val sourceManager: AndroidSourceManager = Injekt.get()) {
+class MihonComicSearcher(private val sourceManager: SourceManager = Injekt.get()) {
 
     suspend fun findBestMatch(series: String, issueNumber: String): Pair<CatalogueSource, SManga>? {
         val sources = sourceManager.getCatalogueSources()
@@ -407,7 +426,9 @@ class CBLImportManager(context: Context) {
 
     private var cachedCategoryId: Long? = null
 
-    val CATEGORY_NAME = "Comic Downloader"
+    companion object {
+        const val CATEGORY_NAME = "Comic Downloader"
+    }
 
     suspend fun getCachedCategoryId(): Long? {
         if (cachedCategoryId == null) {
