@@ -1,12 +1,18 @@
 package eu.kanade.tachiyomi.ui.comicdownloader
 
+import android.content.Intent
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -14,7 +20,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.FileDownload
+import androidx.compose.material.icons.outlined.FolderOpen
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -52,6 +61,7 @@ fun Screen.importTab(screenModel: ComicDownloaderScreenModel): TabContent {
                 onRemoveRepository = screenModel::removeRepository,
                 onFetchCBLs = screenModel::fetchRepositoryCBLs,
                 onImportCBL = screenModel::importAndDownloadCbl,
+                onImportLocalCBL = screenModel::importCblFromLocalFile,
                 onClearError = screenModel::clearError,
             )
         },
@@ -67,10 +77,26 @@ private fun ImportTabContent(
     onRemoveRepository: (String) -> Unit,
     onFetchCBLs: (String) -> Unit,
     onImportCBL: (String, String) -> Unit,
+    onImportLocalCBL: (Uri) -> Unit,
     onClearError: () -> Unit,
 ) {
     var newRepoUrl by remember { mutableStateOf("") }
     var selectedRepo by remember { mutableStateOf<String?>(null) }
+
+    // File picker for local CBL files
+    val filePicker = rememberLauncherForActivityResult(
+        object : ActivityResultContracts.GetContent() {
+            override fun createIntent(context: android.content.Context, input: String): Intent {
+                return super.createIntent(context, input).apply {
+                    type = "*/*"
+                }
+            }
+        },
+    ) { uri ->
+        if (uri != null) {
+            onImportLocalCBL(uri)
+        }
+    }
 
     LaunchedEffect(state.error) {
         state.error?.let { error ->
@@ -86,6 +112,27 @@ private fun ImportTabContent(
             .padding(horizontal = 16.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
+        // ── Local file import ──────────────────────────────────────────────
+        Button(
+            onClick = { filePicker.launch("*/*") },
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Icon(
+                Icons.Outlined.FolderOpen,
+                contentDescription = null,
+                modifier = Modifier.padding(end = 8.dp),
+            )
+            Text(stringResource(MR.strings.label_comic_downloader_pick_file))
+        }
+
+        HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
+        // ── GitHub repository import ───────────────────────────────────────
+        Text(
+            text = stringResource(MR.strings.label_comic_downloader_or_repo),
+            style = MaterialTheme.typography.titleSmall,
+        )
+
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
@@ -157,6 +204,14 @@ private fun ImportTabContent(
 
                     if (selectedRepo == repoUrl) {
                         val files = state.repoFiles[repoUrl] ?: emptyMap()
+                        if (files.isEmpty() && !state.isLoading) {
+                            Text(
+                                text = stringResource(MR.strings.label_comic_downloader_no_cbl_files),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(start = 16.dp, top = 4.dp),
+                            )
+                        }
                         files.forEach { (fileName, _) ->
                             Row(
                                 modifier = Modifier
@@ -178,6 +233,8 @@ private fun ImportTabContent(
                             }
                         }
                     }
+
+                    Spacer(modifier = Modifier.height(4.dp))
                 }
             }
         }

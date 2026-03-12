@@ -1,6 +1,7 @@
 package eu.kanade.tachiyomi.ui.comicdownloader
 
 import android.app.Application
+import android.net.Uri
 import androidx.compose.runtime.Immutable
 import cafe.adriel.voyager.core.model.StateScreenModel
 import cafe.adriel.voyager.core.model.screenModelScope
@@ -15,12 +16,11 @@ import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 
 class ComicDownloaderScreenModel(
-    context: Application = Injekt.get(),
+    private val context: Application = Injekt.get(),
     private val getLibraryManga: GetLibraryManga = Injekt.get(),
 ) : StateScreenModel<ComicDownloaderScreenModel.State>(State()) {
 
     private val repoManager = RepoManager(context)
-    private val cblParser = CBLParser
     private val importManager = CBLImportManager(context)
 
     init {
@@ -74,48 +74,67 @@ class ComicDownloaderScreenModel(
         }
     }
 
+    /** Import a CBL file selected from the device (local file picker). */
+    fun importCblFromLocalFile(uri: Uri) {
+        screenModelScope.launchIO {
+            mutableState.update { it.copy(isLoading = true, error = null) }
+            try {
+                val stream = context.contentResolver.openInputStream(uri)
+                    ?: throw IllegalStateException("Could not open file")
+                val comicList = stream.use { CBLParser.parseFromStream(it) }
+                startImportAndDownload(comicList)
+            } catch (e: Exception) {
+                mutableState.update { it.copy(isLoading = false, error = e.message) }
+            }
+        }
+    }
+
+    /** Import a CBL file from a GitHub repository. */
     fun importAndDownloadCbl(repoUrl: String, fileName: String) {
         screenModelScope.launchIO {
             mutableState.update { it.copy(isLoading = true, error = null) }
             try {
                 val comicList = repoManager.importCblFromRepository(repoUrl, fileName)
-
-                val mangaId = importManager.importCbl(comicList)
-
-                val queueItems = comicList.books.map { book ->
-                    DownloadQueueItem(
-                        bookKey = "${book.series} #${book.number}",
-                        series = book.series,
-                        issueNumber = book.number,
-                        status = "pending",
-                    )
-                }
-                mutableState.update { state ->
-                    state.copy(
-                        isLoading = false,
-                        downloadQueue = state.downloadQueue + queueItems,
-                    )
-                }
-
-                comicList.books.forEach { book ->
-                    val key = "${book.series} #${book.number}"
-                    updateQueueItem(key) { it.copy(status = "downloading") }
-
-                    try {
-                        importManager.downloadIssue(
-                            mangaId = mangaId,
-                            comicBook = book,
-                            mangaFolderName = comicList.folderName,
-                        ) { _, progress ->
-                            updateQueueItem(key) { it.copy(progress = progress) }
-                        }
-                        updateQueueItem(key) { it.copy(status = "done") }
-                    } catch (e: Exception) {
-                        updateQueueItem(key) { it.copy(status = "failed", error = e.message ?: "Failed") }
-                    }
-                }
+                startImportAndDownload(comicList)
             } catch (e: Exception) {
                 mutableState.update { it.copy(isLoading = false, error = e.message) }
+            }
+        }
+    }
+
+    private suspend fun startImportAndDownload(comicList: ComicList) {
+        val mangaId = importManager.importCbl(comicList)
+
+        val queueItems = comicList.books.map { book ->
+            DownloadQueueItem(
+                bookKey = "${book.series} #${book.number}",
+                series = book.series,
+                issueNumber = book.number,
+                status = "pending",
+            )
+        }
+        mutableState.update { state ->
+            state.copy(
+                isLoading = false,
+                downloadQueue = state.downloadQueue + queueItems,
+            )
+        }
+
+        comicList.books.forEach { book ->
+            val key = "${book.series} #${book.number}"
+            updateQueueItem(key) { it.copy(status = "downloading") }
+
+            try {
+                importManager.downloadIssue(
+                    mangaId = mangaId,
+                    comicBook = book,
+                    mangaFolderName = comicList.folderName,
+                ) { _, progress ->
+                    updateQueueItem(key) { it.copy(progress = progress) }
+                }
+                updateQueueItem(key) { it.copy(status = "done") }
+            } catch (e: Exception) {
+                updateQueueItem(key) { it.copy(status = "failed", error = e.message ?: "Failed") }
             }
         }
     }

@@ -28,6 +28,7 @@ import tachiyomi.source.local.LocalSource
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 import java.io.File
+import java.io.InputStream
 import java.util.concurrent.TimeUnit
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
@@ -54,10 +55,19 @@ data class ComicList(
 object CBLParser {
     fun parse(cblPath: String): ComicList {
         return try {
-            val file = File(cblPath)
+            File(cblPath).inputStream().use { parseFromStream(it) }
+        } catch (e: RuntimeException) {
+            throw e
+        } catch (e: Exception) {
+            throw RuntimeException("Error parsing CBL file: ${e.message}", e)
+        }
+    }
+
+    fun parseFromStream(stream: InputStream): ComicList {
+        return try {
             val factory = DocumentBuilderFactory.newInstance()
             val builder = factory.newDocumentBuilder()
-            val doc = builder.parse(file)
+            val doc = builder.parse(stream)
 
             val root = doc.documentElement
             val nameNode = root.getElementsByTagName("Name")
@@ -90,7 +100,7 @@ object CBLParser {
 
             ComicList(folderName = folderName, books = books)
         } catch (e: Exception) {
-            throw RuntimeException("Error parsing CBL file: ${e.message}", e)
+            throw RuntimeException("Error parsing CBL stream: ${e.message}", e)
         }
     }
 }
@@ -106,6 +116,9 @@ class RepoManager(context: Context) {
 
     private val savedReposFile = File(context.filesDir, "saved_repos.json")
     private val importedCblsFile = File(context.filesDir, "imported_cbls.json")
+
+    // json MUST be initialized before savedRepos/importedCbls since load* functions use it
+    private val json: Json = Injekt.get()
 
     private var savedRepos: MutableList<String> = loadRepos().toMutableList()
     private var importedCbls: MutableMap<String, CBLImportData> = loadImportedCbls().toMutableMap()
@@ -125,8 +138,6 @@ class RepoManager(context: Context) {
         val folderName: String,
         val importedAt: String,
     )
-
-    private val json: Json = Injekt.get()
 
     private fun loadRepos(): List<String> {
         return try {
@@ -201,10 +212,15 @@ class RepoManager(context: Context) {
 
     suspend fun fetchRepoFiles(repoUrl: String): Map<String, String> {
         return try {
-            val normalizedUrl = repoUrl.trimEnd('/').replace(".git", "")
-            val allCblFiles = mutableMapOf<String, String>()
+            // Convert user-facing GitHub URL to GitHub Contents API URL
+            // https://github.com/owner/repo -> https://api.github.com/repos/owner/repo/contents
+            val apiBaseUrl = repoUrl.trimEnd('/')
+                .removeSuffix(".git")
+                .replace("https://github.com/", "https://api.github.com/repos/")
+                .plus("/contents")
 
-            scanDirectory(normalizedUrl, allCblFiles, depth = 0)
+            val allCblFiles = mutableMapOf<String, String>()
+            scanDirectory(apiBaseUrl, allCblFiles, depth = 0)
 
             if (allCblFiles.isEmpty()) {
                 throw IllegalArgumentException("No .cbl files found in $repoUrl")
@@ -226,10 +242,14 @@ class RepoManager(context: Context) {
     ) {
         try {
             if (depth > 0) {
+                // Rate-limit polite delay: increases with recursion depth to avoid GitHub API throttling
                 delay(BASE_SCAN_DELAY_MS + (depth * SCAN_DEPTH_INCREMENT_MS))
             }
 
-            val request = Request.Builder().url(apiUrl).build()
+            val request = Request.Builder()
+                .url(apiUrl)
+                .header("Accept", "application/vnd.github.v3+json")
+                .build()
             val response = client.newCall(request).execute()
 
             if (response.code == 404) {
@@ -254,7 +274,7 @@ class RepoManager(context: Context) {
 
             for ((name, type, path) in items) {
                 when {
-                    type == "file" && name.endsWith(".cbl") -> {
+                    type == "file" && name.endsWith(".cbl", ignoreCase = true) -> {
                         collector[name] = path
                         Log.d(TAG, "Found CBL file: $name at $path")
                     }
@@ -265,7 +285,7 @@ class RepoManager(context: Context) {
                 }
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Error scanning directory", e)
+            Log.e(TAG, "Error scanning directory $apiUrl", e)
         }
     }
 
@@ -310,23 +330,22 @@ class RepoManager(context: Context) {
             val fileDict = repoFiles[repoUrl] ?: fetchRepoFiles(repoUrl)
             val filePath = fileDict[fileName] ?: throw IllegalArgumentException("File not found: $fileName")
 
-            val normalizedUrl = repoUrl.trimEnd('/').replace(".git", "")
-            val rawUrl = normalizedUrl.replace("github.com", "raw.githubusercontent.com") + "/main/$filePath"
+            // Use /HEAD/ so the URL works for any default branch name (main, master, etc.)
+            val rawUrl = repoUrl.trimEnd('/')
+                .removeSuffix(".git")
+                .replace("https://github.com/", "https://raw.githubusercontent.com/")
+                .plus("/HEAD/$filePath")
 
             val request = Request.Builder().url(rawUrl).build()
             val response = client.newCall(request).execute()
 
             if (!response.isSuccessful) {
-                throw IllegalStateException("Failed to fetch file: ${response.code}")
+                throw IllegalStateException("Failed to fetch CBL file: HTTP ${response.code}")
             }
 
-            val tempFile = File.createTempFile(fileName, ".cbl")
-            tempFile.writeText(response.body?.string() ?: "")
-
-            val comicList = CBLParser.parse(tempFile.absolutePath)
+            val body = response.body ?: throw IllegalStateException("Empty response body")
+            val comicList = body.byteStream().use { CBLParser.parseFromStream(it) }
             markCblImported(fileName, repoUrl, comicList.folderName)
-
-            tempFile.delete()
             comicList
         } catch (e: Exception) {
             Log.e(TAG, "Failed to import $fileName", e)

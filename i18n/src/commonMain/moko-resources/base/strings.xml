@@ -33,6 +33,9 @@
     <string name="label_comic_downloader_no_reading_lists">No reading lists added yet</string>
     <string name="label_comic_downloader_queue_empty">Download queue is empty</string>
     <string name="label_comic_downloader_issues">issues</string>
+    <string name="label_comic_downloader_pick_file">Import CBL from device</string>
+    <string name="label_comic_downloader_or_repo">Or import from GitHub repository</string>
+    <string name="label_comic_downloader_no_cbl_files">No .cbl files found in this repository</string>
 
     <!-- Screen titles -->
     <string name="label_more">More</string>
