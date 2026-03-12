@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - 'copilot/**'
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -45,7 +46,7 @@ jobs:
           body: |
             > **No git required!** Download `comihon-debug.apk` below and install it on your Android device (Android 8.0+).
 
-            This is an automatically built debug APK from the latest commit on `${{ github.ref_name }}`.
+            This debug APK is built from the latest commit on `${{ github.ref_name }}`.
 
             **Commit:** `${{ github.sha }}`
 
