@@ -2,67 +2,49 @@ package eu.kanade.tachiyomi.ui.comicdownloader
 
 import android.content.Context
 import android.util.Log
+import eu.kanade.domain.manga.interactor.UpdateManga
+import eu.kanade.tachiyomi.source.AndroidSourceManager
+import eu.kanade.tachiyomi.source.CatalogueSource
+import eu.kanade.tachiyomi.source.model.FilterList
+import eu.kanade.tachiyomi.source.model.SChapter
+import eu.kanade.tachiyomi.source.model.SManga
+import eu.kanade.tachiyomi.source.online.HttpSource
 import kotlinx.coroutines.delay
+import mihon.domain.manga.model.toDomainManga
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import org.jsoup.Jsoup
+import tachiyomi.domain.category.interactor.CreateCategoryWithName
+import tachiyomi.domain.category.interactor.SetMangaCategories
+import tachiyomi.domain.category.repository.CategoryRepository
+import tachiyomi.domain.chapter.model.Chapter
+import tachiyomi.domain.chapter.repository.ChapterRepository
+import tachiyomi.domain.manga.interactor.NetworkToLocalManga
+import tachiyomi.domain.manga.model.MangaUpdate
+import tachiyomi.domain.storage.service.StorageManager
+import tachiyomi.source.local.LocalSource
+import uy.kohesive.injekt.Injekt
+import uy.kohesive.injekt.api.get
 import java.io.File
-import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 import javax.xml.parsers.DocumentBuilderFactory
+import kotlin.math.abs
 
 private const val TAG = "ComicDownloader"
 
-/**
- * Data class representing a comic book to be downloaded
- */
 data class ComicBook(
     val series: String,
     val number: String,
     val volume: String,
     val year: String? = null,
-    val issueId: String? = null,
 )
 
-/**
- * Data class representing a list of comics (parsed from CBL)
- */
 data class ComicList(
     val folderName: String,
     val books: List<ComicBook>,
 )
 
-/**
- * Data class representing download progress
- */
-data class DownloadStatus(
-    val bookKey: String,
-    val status: String, // "pending", "downloading", "done", "failed"
-    val reason: String = "",
-    val progress: Int = 0,
-)
-
-/**
- * Data class representing a comic list with its download status
- */
-data class ComicArc(
-    val folderName: String,
-    val books: List<ComicBook>,
-    val outputDir: String,
-    val status: MutableMap<String, DownloadStatus> = mutableMapOf(),
-)
-
-/**
- * Data class representing a repository entry
- */
-data class RepositoryCBLFile(
-    val fileName: String,
-    val filePath: String,
-)
-
-/**
- * Parses CBL (Comic Book List) XML files
- */
 object CBLParser {
     fun parse(cblPath: String): ComicList {
         return try {
@@ -89,22 +71,8 @@ object CBLParser {
                 val volume = bookElement.attributes?.getNamedItem("Volume")?.nodeValue
                 val year = bookElement.attributes?.getNamedItem("Year")?.nodeValue
 
-                val databaseNode = bookElement.childNodes.let { nodes ->
-                    (0 until nodes.length).map { nodes.item(it) }
-                        .find { it.nodeName == "Database" }
-                }
-                val issueId = databaseNode?.attributes?.getNamedItem("Issue")?.nodeValue
-
                 if (!series.isNullOrEmpty() && !number.isNullOrEmpty() && !volume.isNullOrEmpty()) {
-                    books.add(
-                        ComicBook(
-                            series = series,
-                            number = number,
-                            volume = volume,
-                            year = year,
-                            issueId = issueId,
-                        ),
-                    )
+                    books.add(ComicBook(series = series, number = number, volume = volume, year = year))
                 } else {
                     Log.w(TAG, "Skipping incomplete entry: Series=$series, Number=$number, Volume=$volume")
                 }
@@ -120,120 +88,6 @@ object CBLParser {
         }
     }
 }
-
-/**
- * Handles downloading comics from readcomiconline.li
- */
-class Downloader(
-    private val baseUrl: String = "https://readcomiconline.li",
-    private val timeout: Long = 30,
-) {
-    private val client = OkHttpClient.Builder()
-        .connectTimeout(timeout, TimeUnit.SECONDS)
-        .readTimeout(timeout, TimeUnit.SECONDS)
-        .build()
-
-    suspend fun getSeriesUrl(series: String, volume: String): String? {
-        return try {
-            val searchQuery = URLEncoder.encode("$series ($volume)", "UTF-8")
-            val searchUrl = "$baseUrl/AdvanceSearch?name=$searchQuery"
-
-            val request = Request.Builder().url(searchUrl).build()
-            val response = client.newCall(request).execute()
-
-            if (!response.isSuccessful) return null
-
-            val doc = Jsoup.parse(response.body?.string() ?: "")
-            val seriesLinks = doc.select("a[href^=/Comic/]")
-
-            // Exact match first
-            for (link in seriesLinks) {
-                if (series.equals(link.text(), ignoreCase = true)) {
-                    return baseUrl + link.attr("href")
-                }
-            }
-
-            // Partial word match
-            for (link in seriesLinks) {
-                if (link.text().contains(series, ignoreCase = true)) {
-                    return baseUrl + link.attr("href")
-                }
-            }
-
-            // Try with first word
-            val firstWord = series.split(" ").firstOrNull()?.lowercase() ?: ""
-            if (firstWord.isNotEmpty()) {
-                for (link in seriesLinks) {
-                    if (link.text().lowercase().contains(firstWord)) {
-                        return baseUrl + link.attr("href")
-                    }
-                }
-            }
-
-            null
-        } catch (e: Exception) {
-            Log.e(TAG, "Error searching for series $series", e)
-            null
-        }
-    }
-
-    suspend fun getIssueUrl(seriesUrl: String, number: String): String? {
-        return try {
-            val request = Request.Builder().url(seriesUrl).build()
-            val response = client.newCall(request).execute()
-
-            if (!response.isSuccessful) return null
-
-            val doc = Jsoup.parse(response.body?.string() ?: "")
-            val issueLinks = doc.select("a[href~=/Issue-]")
-
-            val numStr = number.trim()
-
-            // Try exact matches first
-            for (link in issueLinks) {
-                val linkText = link.text().trim()
-                when {
-                    linkText.contains("#$numStr") -> return baseUrl + link.attr("href")
-                    linkText.contains("Issue $numStr") -> return baseUrl + link.attr("href")
-                    linkText.endsWith("#$numStr") -> return baseUrl + link.attr("href")
-                    linkText.endsWith(numStr) -> return baseUrl + link.attr("href")
-                }
-            }
-
-            // Fallback: try any link with the number
-            for (link in issueLinks) {
-                if (link.text().contains(numStr)) {
-                    return baseUrl + link.attr("href")
-                }
-            }
-
-            null
-        } catch (e: Exception) {
-            Log.e(TAG, "Error fetching series page", e)
-            null
-        }
-    }
-
-    suspend fun downloadIssue(issueUrl: String, outputDir: String): Result<Unit> {
-        return try {
-            // Actual download logic would invoke Mihon's download system or an external tool.
-            // This stub is a placeholder that should be replaced with the real implementation.
-            Log.d(TAG, "downloadIssue: url=$issueUrl outputDir=$outputDir")
-            Result.success(Unit)
-        } catch (e: Exception) {
-            Log.e(TAG, "Error downloading from $issueUrl", e)
-            Result.failure(e)
-        }
-    }
-}
-
-/**
- * Repository data for CBL files from GitHub
- */
-data class GitHubRepository(
-    val url: String,
-    val cblFiles: Map<String, String> = emptyMap(), // {fileName: filePath}
-)
 
 /**
  * Manages GitHub repositories and CBL imports, persisting data in app-private storage.
@@ -463,100 +317,201 @@ class RepoManager(context: Context) {
 }
 
 /**
- * Main comic downloader orchestrator.
+ * Searches installed Mihon sources for a matching manga series.
  */
-class ComicDownloader(context: Context) {
-    private val parser = CBLParser
-    private val downloader = Downloader()
-    val repoManager = RepoManager(context)
-    private val outputBaseDir = context.getExternalFilesDir(null)?.absolutePath
-        ?: context.filesDir.absolutePath
-    private val arcs = mutableMapOf<String, ComicArc>()
+class MihonComicSearcher(private val sourceManager: AndroidSourceManager = Injekt.get()) {
 
-    /**
-     * Load a CBL file and prepare it for downloading.
-     */
-    fun loadComicList(cblPath: String): ComicList {
-        val comicList = parser.parse(cblPath)
-        addArc(comicList.folderName, comicList.books)
-        return comicList
-    }
-
-    /**
-     * Import a CBL file from a GitHub repository.
-     */
-    suspend fun importFromRepository(repoUrl: String, fileName: String): ComicList {
-        val comicList = repoManager.importCblFromRepository(repoUrl, fileName)
-        addArc(comicList.folderName, comicList.books)
-        return comicList
-    }
-
-    private fun addArc(folderName: String, books: List<ComicBook>) {
-        val outputDir = "$outputBaseDir/$folderName"
-        val status = mutableMapOf<String, DownloadStatus>()
-        books.forEach { book ->
-            val key = "${book.series} #${book.number}"
-            status[key] = DownloadStatus(key, "pending")
-        }
-        arcs[folderName] = ComicArc(folderName, books, outputDir, status)
-    }
-
-    /**
-     * Download all books in an arc, updating statuses as downloads proceed.
-     */
-    suspend fun downloadArc(arcName: String, onProgress: (String, DownloadStatus) -> Unit = { _, _ -> }): Boolean {
-        val arc = arcs[arcName] ?: return false
-
-        for (book in arc.books) {
-            val key = "${book.series} #${book.number}"
-            arc.status[key] = DownloadStatus(key, "downloading")
-            onProgress(key, arc.status[key]!!)
-
+    suspend fun findBestMatch(series: String, issueNumber: String): Pair<CatalogueSource, SManga>? {
+        val sources = sourceManager.getCatalogueSources()
+        for (source in sources) {
             try {
-                val seriesUrl = downloader.getSeriesUrl(book.series, book.volume)
-                if (seriesUrl != null) {
-                    val issueUrl = downloader.getIssueUrl(seriesUrl, book.number)
-                    if (issueUrl != null) {
-                        val result = downloader.downloadIssue(issueUrl, arc.outputDir)
-                        arc.status[key] = if (result.isSuccess) {
-                            DownloadStatus(key, "done")
-                        } else {
-                            DownloadStatus(key, "failed", result.exceptionOrNull()?.message ?: "Unknown error")
-                        }
-                    } else {
-                        arc.status[key] = DownloadStatus(key, "failed", "No issue URL found")
-                    }
-                } else {
-                    arc.status[key] = DownloadStatus(key, "failed", "No series URL found")
-                }
+                val page = source.getSearchManga(1, series, FilterList())
+                val match = page.mangas.firstOrNull() ?: continue
+                return Pair(source, match)
             } catch (e: Exception) {
-                arc.status[key] = DownloadStatus(key, "failed", e.message ?: "Unknown error")
+                Log.w(TAG, "Source ${source.name} failed for '$series': ${e.message}")
             }
+        }
+        return null
+    }
 
-            onProgress(key, arc.status[key]!!)
+    suspend fun getMatchingChapter(source: CatalogueSource, sManga: SManga, issueNumber: String): SChapter? {
+        return try {
+            val chapters = source.getChapterList(sManga)
+            val targetNumber = issueNumber.toFloatOrNull() ?: return chapters.firstOrNull()
+            chapters.minByOrNull { abs(it.chapter_number - targetNumber) }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to get chapters for ${sManga.title}: ${e.message}")
+            null
+        }
+    }
+}
+
+/**
+ * Downloads a comic issue and packages it as a CBZ in LocalSource's directory.
+ */
+class LocalComicDownloader(private val storageManager: StorageManager = Injekt.get()) {
+
+    suspend fun downloadIssueToLocalSource(
+        source: HttpSource,
+        sManga: SManga,
+        sChapter: SChapter,
+        mangaFolderName: String,
+        chapterName: String,
+        onProgress: (Int) -> Unit,
+    ): Boolean {
+        return try {
+            val localSourceDir = storageManager.getLocalSourceDirectory() ?: return false
+            val mangaDir = localSourceDir.createDirectory(mangaFolderName) ?: return false
+
+            val pages = source.getPageList(sChapter)
+            if (pages.isEmpty()) return false
+
+            val zipFile = mangaDir.createFile("$chapterName.cbz") ?: return false
+            zipFile.openOutputStream().use { fos ->
+                ZipOutputStream(fos).use { zos ->
+                    pages.forEachIndexed { idx, page ->
+                        val response = source.getImage(page)
+                        val bytes = response.body.bytes()
+                        val ext = if (response.headers["Content-Type"]?.contains("png") == true) "png" else "jpg"
+                        zos.putNextEntry(ZipEntry(String.format("%03d.%s", idx + 1, ext)))
+                        zos.write(bytes)
+                        zos.closeEntry()
+                        response.close()
+                        onProgress((idx + 1) * 100 / pages.size)
+                    }
+                }
+            }
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to download '$chapterName': ${e.message}", e)
+            false
+        }
+    }
+}
+
+/**
+ * Manages importing CBL comic lists into Mihon's database and downloading issues.
+ */
+class CBLImportManager(context: Context) {
+
+    private val networkToLocalManga: NetworkToLocalManga = Injekt.get()
+    private val updateManga: UpdateManga = Injekt.get()
+    private val setMangaCategories: SetMangaCategories = Injekt.get()
+    private val createCategoryWithName: CreateCategoryWithName = Injekt.get()
+    private val categoryRepository: CategoryRepository = Injekt.get()
+    private val chapterRepository: ChapterRepository = Injekt.get()
+
+    private val searcher = MihonComicSearcher()
+    private val downloader = LocalComicDownloader()
+
+    private var cachedCategoryId: Long? = null
+
+    val CATEGORY_NAME = "Comic Downloader"
+
+    suspend fun getCachedCategoryId(): Long? {
+        if (cachedCategoryId == null) {
+            cachedCategoryId = categoryRepository.getAll().find { it.name == CATEGORY_NAME }?.id
+        }
+        return cachedCategoryId
+    }
+
+    suspend fun ensureCategory(): Long {
+        cachedCategoryId?.let { return it }
+        val categories = categoryRepository.getAll()
+        val existing = categories.find { it.name == CATEGORY_NAME }
+        if (existing != null) {
+            cachedCategoryId = existing.id
+            return existing.id
+        }
+        createCategoryWithName.await(CATEGORY_NAME)
+        val updated = categoryRepository.getAll()
+        val created = updated.find { it.name == CATEGORY_NAME }
+            ?: error("Failed to create '$CATEGORY_NAME' category")
+        cachedCategoryId = created.id
+        return created.id
+    }
+
+    suspend fun importCbl(comicList: ComicList): Long {
+        val categoryId = ensureCategory()
+        val mangaFolderName = sanitizeFolderName(comicList.folderName)
+
+        val sManga = SManga.create().apply {
+            url = mangaFolderName
+            title = comicList.folderName
+            initialized = true
         }
 
-        return true
+        val inserted = networkToLocalManga.invoke(sManga.toDomainManga(LocalSource.ID))
+        val mangaId = inserted.id
+
+        updateManga.await(
+            MangaUpdate(
+                id = mangaId,
+                favorite = true,
+                dateAdded = System.currentTimeMillis(),
+                initialized = true,
+            ),
+        )
+
+        val chapters = comicList.books.mapIndexed { index, book ->
+            val chapterName = "${book.series} #${book.number}"
+            Chapter(
+                id = -1L,
+                mangaId = mangaId,
+                read = false,
+                bookmark = false,
+                lastPageRead = 0L,
+                dateFetch = System.currentTimeMillis(),
+                sourceOrder = index.toLong(),
+                url = "$mangaFolderName/$chapterName.cbz",
+                name = chapterName,
+                dateUpload = 0L,
+                chapterNumber = book.number.toDoubleOrNull() ?: -1.0,
+                scanlator = null,
+                lastModifiedAt = System.currentTimeMillis(),
+                version = 0L,
+            )
+        }
+        chapterRepository.addAll(chapters)
+
+        setMangaCategories.await(mangaId, listOf(categoryId))
+
+        return mangaId
     }
 
-    fun getArcProgress(arcName: String): Pair<Int, Int> {
-        val arc = arcs[arcName] ?: return Pair(0, 0)
-        val completed = arc.status.values.count { it.status == "done" }
-        return Pair(completed, arc.books.size)
+    suspend fun downloadIssue(
+        mangaId: Long,
+        comicBook: ComicBook,
+        mangaFolderName: String,
+        onProgress: (String, Int) -> Unit,
+    ) {
+        val chapterName = "${comicBook.series} #${comicBook.number}"
+        val (catalogueSource, sManga) = searcher.findBestMatch(comicBook.series, comicBook.number)
+            ?: run {
+                Log.w(TAG, "No source match for '$chapterName'")
+                return
+            }
+        val sChapter = searcher.getMatchingChapter(catalogueSource, sManga, comicBook.number)
+            ?: run {
+                Log.w(TAG, "No chapter match for '$chapterName'")
+                return
+            }
+        val httpSource = catalogueSource as? HttpSource
+            ?: run {
+                Log.w(TAG, "Source for '$chapterName' is not an HttpSource")
+                return
+            }
+        downloader.downloadIssueToLocalSource(
+            source = httpSource,
+            sManga = sManga,
+            sChapter = sChapter,
+            mangaFolderName = mangaFolderName,
+            chapterName = chapterName,
+            onProgress = { progress -> onProgress(chapterName, progress) },
+        )
     }
 
-    fun getAllArcs(): List<ComicArc> = arcs.values.toList()
-
-    fun getArc(arcName: String): ComicArc? = arcs[arcName]
-
-    fun addRepository(repoUrl: String) = repoManager.addRepo(repoUrl)
-
-    fun removeRepository(repoUrl: String) = repoManager.removeRepo(repoUrl)
-
-    fun getSavedRepositories(): List<String> = repoManager.getSavedRepos()
-
-    suspend fun fetchRepositoryCBLs(repoUrl: String): Map<String, String> =
-        repoManager.fetchRepoFiles(repoUrl)
-
-    fun isFileImported(fileName: String): Boolean = repoManager.isCblImported(fileName)
+    private fun sanitizeFolderName(name: String): String =
+        name.replace(Regex("[\\\\/:*?\"<>|]"), "_").trim()
 }

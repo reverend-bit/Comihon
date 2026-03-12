@@ -16,9 +16,10 @@ import androidx.compose.material.icons.outlined.HourglassBottom
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -29,45 +30,30 @@ import tachiyomi.presentation.core.screens.EmptyScreen
 
 @Composable
 fun Screen.queueTab(screenModel: ComicDownloaderScreenModel): TabContent {
-    val state = screenModel.state
+    val state by screenModel.state.collectAsState()
 
     return TabContent(
         titleRes = MR.strings.label_comic_downloader_queue,
-        content = { contentPadding, snackbarHostState ->
-            QueueTabContent(
-                state = state,
+        content = { contentPadding, _ ->
+            if (state.downloadQueue.isEmpty()) {
+                EmptyScreen(
+                    stringRes = MR.strings.label_comic_downloader_queue_empty,
+                    modifier = Modifier.padding(contentPadding),
+                )
+                return@TabContent
+            }
+
+            LazyColumn(
                 contentPadding = contentPadding,
-                snackbarHostState = snackbarHostState,
-            )
+                modifier = Modifier.fillMaxSize(),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                items(state.downloadQueue) { item ->
+                    QueueItem(item)
+                }
+            }
         },
     )
-}
-
-@Composable
-private fun QueueTabContent(
-    state: androidx.compose.runtime.State<ComicDownloaderScreenModel.State>,
-    contentPadding: PaddingValues,
-    snackbarHostState: SnackbarHostState,
-) {
-    val currentState = state.value
-
-    if (currentState.downloadQueue.isEmpty()) {
-        EmptyScreen(
-            stringRes = MR.strings.label_comic_downloader_queue_empty,
-            modifier = Modifier.padding(contentPadding),
-        )
-        return
-    }
-
-    LazyColumn(
-        contentPadding = contentPadding,
-        modifier = Modifier.fillMaxSize(),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
-    ) {
-        items(currentState.downloadQueue) { item ->
-            QueueItem(item)
-        }
-    }
 }
 
 @Composable

@@ -5,8 +5,6 @@ import androidx.compose.animation.graphics.res.rememberAnimatedVectorPainter
 import androidx.compose.animation.graphics.vector.AnimatedImageVector
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
 import cafe.adriel.voyager.core.model.rememberScreenModel
 import cafe.adriel.voyager.navigator.Navigator
 import cafe.adriel.voyager.navigator.tab.LocalTabNavigator
@@ -37,7 +35,6 @@ data object ComicDownloaderTab : Tab {
     @Composable
     override fun Content() {
         val screenModel = rememberScreenModel { ComicDownloaderScreenModel() }
-        val state by screenModel.state.collectAsState()
 
         val tabs = persistentListOf(
             importTab(screenModel),

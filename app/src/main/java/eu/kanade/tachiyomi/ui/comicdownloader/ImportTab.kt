@@ -51,7 +51,7 @@ fun Screen.importTab(screenModel: ComicDownloaderScreenModel): TabContent {
                 onAddRepository = screenModel::addRepository,
                 onRemoveRepository = screenModel::removeRepository,
                 onFetchCBLs = screenModel::fetchRepositoryCBLs,
-                onImportCBL = screenModel::importCbl,
+                onImportCBL = screenModel::importAndDownloadCbl,
                 onClearError = screenModel::clearError,
             )
         },

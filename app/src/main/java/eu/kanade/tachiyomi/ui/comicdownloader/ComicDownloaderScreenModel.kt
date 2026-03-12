@@ -4,33 +4,57 @@ import android.app.Application
 import androidx.compose.runtime.Immutable
 import cafe.adriel.voyager.core.model.StateScreenModel
 import cafe.adriel.voyager.core.model.screenModelScope
+import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import tachiyomi.core.common.util.lang.launchIO
+import tachiyomi.domain.library.model.LibraryManga
+import tachiyomi.domain.manga.interactor.GetLibraryManga
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 
 class ComicDownloaderScreenModel(
     context: Application = Injekt.get(),
+    private val getLibraryManga: GetLibraryManga = Injekt.get(),
 ) : StateScreenModel<ComicDownloaderScreenModel.State>(State()) {
 
-    private val comicDownloader = ComicDownloader(context)
+    private val repoManager = RepoManager(context)
+    private val cblParser = CBLParser
+    private val importManager = CBLImportManager(context)
 
     init {
-        mutableState.update { it.copy(repositories = comicDownloader.getSavedRepositories()) }
+        mutableState.update { it.copy(repositories = repoManager.getSavedRepos()) }
+
+        screenModelScope.launchIO {
+            getLibraryManga.subscribe()
+                .map { libraryList ->
+                    val categoryId = importManager.getCachedCategoryId()
+                    if (categoryId == null) {
+                        emptyList()
+                    } else {
+                        libraryList.filter { it.categories.contains(categoryId) }
+                    }
+                }
+                .catch { /* ignore */ }
+                .collectLatest { manga ->
+                    mutableState.update { it.copy(readingList = manga) }
+                }
+        }
     }
 
     fun addRepository(url: String) {
         val trimmed = url.trim()
         if (trimmed.isBlank()) return
-        comicDownloader.addRepository(trimmed)
-        mutableState.update { it.copy(repositories = comicDownloader.getSavedRepositories()) }
+        repoManager.addRepo(trimmed)
+        mutableState.update { it.copy(repositories = repoManager.getSavedRepos()) }
     }
 
     fun removeRepository(url: String) {
-        comicDownloader.removeRepository(url)
+        repoManager.removeRepo(url)
         mutableState.update { state ->
             state.copy(
-                repositories = comicDownloader.getSavedRepositories(),
+                repositories = repoManager.getSavedRepos(),
                 repoFiles = state.repoFiles - url,
             )
         }
@@ -40,12 +64,9 @@ class ComicDownloaderScreenModel(
         screenModelScope.launchIO {
             mutableState.update { it.copy(isLoading = true, error = null) }
             try {
-                val files = comicDownloader.fetchRepositoryCBLs(repoUrl)
+                val files = repoManager.fetchRepoFiles(repoUrl)
                 mutableState.update { state ->
-                    state.copy(
-                        isLoading = false,
-                        repoFiles = state.repoFiles + (repoUrl to files),
-                    )
+                    state.copy(isLoading = false, repoFiles = state.repoFiles + (repoUrl to files))
                 }
             } catch (e: Exception) {
                 mutableState.update { it.copy(isLoading = false, error = e.message) }
@@ -53,20 +74,45 @@ class ComicDownloaderScreenModel(
         }
     }
 
-    fun importCbl(repoUrl: String, fileName: String) {
+    fun importAndDownloadCbl(repoUrl: String, fileName: String) {
         screenModelScope.launchIO {
             mutableState.update { it.copy(isLoading = true, error = null) }
             try {
-                val comicList = comicDownloader.importFromRepository(repoUrl, fileName)
-                val item = ComicListItem(
-                    folderName = comicList.folderName,
-                    bookCount = comicList.books.size,
-                )
+                val comicList = repoManager.importCblFromRepository(repoUrl, fileName)
+
+                val mangaId = importManager.importCbl(comicList)
+
+                val queueItems = comicList.books.map { book ->
+                    DownloadQueueItem(
+                        bookKey = "${book.series} #${book.number}",
+                        series = book.series,
+                        issueNumber = book.number,
+                        status = "pending",
+                    )
+                }
                 mutableState.update { state ->
                     state.copy(
                         isLoading = false,
-                        readingList = (state.readingList + item).distinctBy { it.folderName },
+                        downloadQueue = state.downloadQueue + queueItems,
                     )
+                }
+
+                comicList.books.forEach { book ->
+                    val key = "${book.series} #${book.number}"
+                    updateQueueItem(key) { it.copy(status = "downloading") }
+
+                    try {
+                        importManager.downloadIssue(
+                            mangaId = mangaId,
+                            comicBook = book,
+                            mangaFolderName = comicList.folderName,
+                        ) { _, progress ->
+                            updateQueueItem(key) { it.copy(progress = progress) }
+                        }
+                        updateQueueItem(key) { it.copy(status = "done") }
+                    } catch (e: Exception) {
+                        updateQueueItem(key) { it.copy(status = "failed", error = e.message ?: "Failed") }
+                    }
                 }
             } catch (e: Exception) {
                 mutableState.update { it.copy(isLoading = false, error = e.message) }
@@ -74,46 +120,11 @@ class ComicDownloaderScreenModel(
         }
     }
 
-    fun removeFromReadingList(folderName: String) {
+    private fun updateQueueItem(key: String, transform: (DownloadQueueItem) -> DownloadQueueItem) {
         mutableState.update { state ->
-            state.copy(readingList = state.readingList.filter { it.folderName != folderName })
-        }
-    }
-
-    fun downloadArc(folderName: String) {
-        screenModelScope.launchIO {
-            val arc = comicDownloader.getArc(folderName) ?: return@launchIO
-            val initialQueue = arc.books.map { book ->
-                DownloadQueueItem(
-                    bookKey = "${book.series} #${book.number}",
-                    series = book.series,
-                    issueNumber = book.number,
-                    status = "pending",
-                )
-            }
-            mutableState.update { state ->
-                val existing = state.downloadQueue.map { it.bookKey }.toSet()
-                val toAdd = initialQueue.filter { it.bookKey !in existing }
-                state.copy(downloadQueue = state.downloadQueue + toAdd)
-            }
-
-            comicDownloader.downloadArc(folderName) { key, status ->
-                mutableState.update { state ->
-                    state.copy(
-                        downloadQueue = state.downloadQueue.map { item ->
-                            if (item.bookKey == key) {
-                                item.copy(
-                                    status = status.status,
-                                    progress = status.progress,
-                                    error = status.reason,
-                                )
-                            } else {
-                                item
-                            }
-                        },
-                    )
-                }
-            }
+            state.copy(
+                downloadQueue = state.downloadQueue.map { if (it.bookKey == key) transform(it) else it },
+            )
         }
     }
 
@@ -125,18 +136,12 @@ class ComicDownloaderScreenModel(
     data class State(
         val isLoading: Boolean = false,
         val error: String? = null,
-        val readingList: List<ComicListItem> = emptyList(),
+        val readingList: List<LibraryManga> = emptyList(),
         val downloadQueue: List<DownloadQueueItem> = emptyList(),
         val repositories: List<String> = emptyList(),
         val repoFiles: Map<String, Map<String, String>> = emptyMap(),
     )
 }
-
-@Immutable
-data class ComicListItem(
-    val folderName: String,
-    val bookCount: Int,
-)
 
 @Immutable
 data class DownloadQueueItem(
