@@ -302,6 +302,12 @@ androidComponents {
     }
 }
 
+tasks.register("generateVersionTxt") {
+    doLast {
+        project.file("version.txt").writeText(android.defaultConfig.versionName ?: "")
+    }
+}
+
 buildscript {
     dependencies {
         classpath(kotlinx.gradle)

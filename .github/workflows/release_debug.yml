@@ -36,24 +36,12 @@ jobs:
       - name: Build debug APK
         run: ./gradlew assembleDebug
 
-      - name: Rename APK
-        run: |
-          mv app/build/outputs/apk/debug/app-universal-debug.apk comihon-debug.apk
+      - name: Generate version.txt
+        run: ./gradlew generateVersionTxt
 
-      - name: Create or update GitHub Release
-        uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2.5.0
-        with:
-          tag_name: debug-latest
-          name: "Comihon Debug Build"
-          body: |
-            > **No git required!** Download `comihon-debug.apk` below and install it on your Android device (Android 8.0+).
-
-            This debug APK is built from the latest commit on `${{ github.ref_name }}`.
-
-            **Commit:** `${{ github.sha }}`
-
-            > [!NOTE]
-            > This is a debug build for testing purposes. It is unsigned with the release key.
-          files: comihon-debug.apk
-          prerelease: true
-          make_latest: false
+      - name: Release Debug APK
+        uses: glenfordham/action-release-debugapk@37b414425bf40655d62b54314101edf8944420a5 # v0.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APP_FOLDER: app
+          RELEASE_TITLE: Comihon Debug Build
