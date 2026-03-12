@@ -116,13 +116,14 @@ class RepoManager(context: Context) {
 
     private val savedReposFile = File(context.filesDir, "saved_repos.json")
     private val importedCblsFile = File(context.filesDir, "imported_cbls.json")
+    private val repoFilesFile = File(context.filesDir, "repo_files.json")
 
     // json MUST be initialized before savedRepos/importedCbls since load* functions use it
     private val json: Json = Injekt.get()
 
     private var savedRepos: MutableList<String> = loadRepos().toMutableList()
     private var importedCbls: MutableMap<String, CBLImportData> = loadImportedCbls().toMutableMap()
-    private var repoFiles: MutableMap<String, Map<String, String>> = mutableMapOf()
+    private var repoFiles: MutableMap<String, Map<String, String>> = loadRepoFiles().toMutableMap()
 
     data class CBLImportData(
         val repoUrl: String,
@@ -137,6 +138,12 @@ class RepoManager(context: Context) {
         val repoUrl: String,
         val folderName: String,
         val importedAt: String,
+    )
+
+    @Serializable
+    private data class RepoFilesEntry(
+        val repoUrl: String,
+        val files: Map<String, String>,
     )
 
     private fun loadRepos(): List<String> {
@@ -168,6 +175,20 @@ class RepoManager(context: Context) {
         }
     }
 
+    private fun loadRepoFiles(): Map<String, Map<String, String>> {
+        return try {
+            if (repoFilesFile.exists()) {
+                val entries = json.decodeFromString<List<RepoFilesEntry>>(repoFilesFile.readText())
+                entries.associate { it.repoUrl to it.files }
+            } else {
+                emptyMap()
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error loading repo files cache", e)
+            emptyMap()
+        }
+    }
+
     fun saveRepos() {
         try {
             val serialized = savedRepos.joinToString(",") { "\"$it\"" }
@@ -188,6 +209,17 @@ class RepoManager(context: Context) {
         }
     }
 
+    private fun saveRepoFiles() {
+        try {
+            val entries = repoFiles.entries.map { (repoUrl, files) ->
+                RepoFilesEntry(repoUrl, files)
+            }
+            repoFilesFile.writeText(json.encodeToString(entries))
+        } catch (e: Exception) {
+            Log.e(TAG, "Error saving repo files cache", e)
+        }
+    }
+
     fun addRepo(repoUrl: String) {
         if (!savedRepos.contains(repoUrl)) {
             savedRepos.add(repoUrl)
@@ -199,9 +231,13 @@ class RepoManager(context: Context) {
         savedRepos.remove(repoUrl)
         repoFiles.remove(repoUrl)
         saveRepos()
+        saveRepoFiles()
     }
 
     fun getSavedRepos(): List<String> = savedRepos.toList()
+
+    /** Returns the cached CBL file list for a repo, or null if it has never been scanned. */
+    fun getCachedRepoFiles(repoUrl: String): Map<String, String>? = repoFiles[repoUrl]
 
     fun markCblImported(fileName: String, repoUrl: String, folderName: String) {
         importedCbls[fileName] = CBLImportData(repoUrl, folderName, System.currentTimeMillis().toString())
