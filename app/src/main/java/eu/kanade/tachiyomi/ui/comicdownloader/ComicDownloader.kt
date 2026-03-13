@@ -149,8 +149,7 @@ class RepoManager(context: Context) {
     private fun loadRepos(): List<String> {
         return try {
             if (savedReposFile.exists()) {
-                savedReposFile.readText().split(",")
-                    .map { it.trim().removeSurrounding("\"") }
+                json.decodeFromString<List<String>>(savedReposFile.readText())
                     .filter { it.startsWith("https://github.com") }
             } else {
                 emptyList()
@@ -564,20 +563,11 @@ class CBLImportManager(context: Context) {
     ) {
         val chapterName = "${comicBook.series} #${comicBook.number}"
         val (catalogueSource, sManga) = searcher.findBestMatch(comicBook.series, comicBook.number)
-            ?: run {
-                Log.w(TAG, "No source match for '$chapterName'")
-                return
-            }
+            ?: throw IllegalStateException("No source match found for '$chapterName'")
         val sChapter = searcher.getMatchingChapter(catalogueSource, sManga, comicBook.number)
-            ?: run {
-                Log.w(TAG, "No chapter match for '$chapterName'")
-                return
-            }
+            ?: throw IllegalStateException("No chapter match found for '$chapterName'")
         val httpSource = catalogueSource as? HttpSource
-            ?: run {
-                Log.w(TAG, "Source for '$chapterName' is not an HttpSource")
-                return
-            }
+            ?: throw IllegalStateException("Source for '$chapterName' is not an HttpSource")
         downloader.downloadIssueToLocalSource(
             source = httpSource,
             sManga = sManga,
