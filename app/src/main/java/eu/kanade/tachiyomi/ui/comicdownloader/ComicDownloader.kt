@@ -40,6 +40,10 @@ private const val BASE_SCAN_DELAY_MS = 500L
 private const val SCAN_DEPTH_INCREMENT_MS = 200L
 private const val MAX_SCAN_DEPTH = 5
 
+// Max distance between a CBL issue number and a source chapter number to consider
+// them a match. 0.5 means issue "34" matches chapter 34.0 but not 34.5 or 35.0.
+private const val CHAPTER_NUMBER_MATCH_THRESHOLD = 0.5
+
 data class ComicBook(
     val series: String,
     val number: String,
@@ -570,9 +574,9 @@ class CBLImportManager(context: Context) {
     ): Chapter? {
         val targetNumber = issueNumber.toDoubleOrNull()
         return if (targetNumber != null) {
-            // Find chapter with closest matching number (within threshold of 0.5)
+            // Find chapter with closest matching number
             val bestMatch = dbChapters.minByOrNull { abs(it.chapterNumber - targetNumber) }
-            bestMatch?.takeIf { abs(it.chapterNumber - targetNumber) < 0.5 }
+            bestMatch?.takeIf { abs(it.chapterNumber - targetNumber) < CHAPTER_NUMBER_MATCH_THRESHOLD }
         } else {
             // Fallback: try matching by name containing the issue number
             dbChapters.find { it.name.contains("#$issueNumber", ignoreCase = true) }
