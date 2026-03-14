@@ -519,7 +519,7 @@ class CBLImportManager(context: Context) {
             sManga
         }
 
-        val domainManga = networkToLocalManga(sManga.toDomainManga(source.id))
+        val domainManga = networkToLocalManga(detailedManga.toDomainManga(source.id))
         val mangaId = domainManga.id
 
         // Update with full details from source
@@ -571,8 +571,8 @@ class CBLImportManager(context: Context) {
         val targetNumber = issueNumber.toDoubleOrNull()
         return if (targetNumber != null) {
             // Find chapter with closest matching number (within threshold of 0.5)
-            dbChapters.minByOrNull { abs(it.chapterNumber - targetNumber) }
-                ?.takeIf { abs(it.chapterNumber - targetNumber) < 0.5 }
+            val bestMatch = dbChapters.minByOrNull { abs(it.chapterNumber - targetNumber) }
+            bestMatch?.takeIf { abs(it.chapterNumber - targetNumber) < 0.5 }
         } else {
             // Fallback: try matching by name containing the issue number
             dbChapters.find { it.name.contains("#$issueNumber", ignoreCase = true) }
