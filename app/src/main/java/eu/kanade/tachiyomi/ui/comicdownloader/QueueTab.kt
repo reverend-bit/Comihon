@@ -13,8 +13,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.HourglassBottom
+import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material3.Icon
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -61,7 +61,7 @@ private fun QueueItem(item: DownloadQueueItem) {
     val (statusIcon, statusColor) = when (item.status) {
         "done" -> Icons.Outlined.Check to MaterialTheme.colorScheme.tertiary
         "failed" -> Icons.Outlined.Close to MaterialTheme.colorScheme.error
-        "downloading" -> null to MaterialTheme.colorScheme.primary
+        "searching" -> Icons.Outlined.Search to MaterialTheme.colorScheme.primary
         else -> Icons.Outlined.HourglassBottom to MaterialTheme.colorScheme.onSurface
     }
 
@@ -75,9 +75,7 @@ private fun QueueItem(item: DownloadQueueItem) {
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            if (statusIcon != null) {
-                Icon(statusIcon, contentDescription = item.status, tint = statusColor)
-            }
+            Icon(statusIcon, contentDescription = item.status, tint = statusColor)
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = item.series,
@@ -93,15 +91,6 @@ private fun QueueItem(item: DownloadQueueItem) {
                 text = item.status.replaceFirstChar { it.uppercase() },
                 style = MaterialTheme.typography.labelMedium,
                 color = statusColor,
-            )
-        }
-
-        if (item.status == "downloading") {
-            LinearProgressIndicator(
-                progress = { item.progress / 100f },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 4.dp),
             )
         }
 

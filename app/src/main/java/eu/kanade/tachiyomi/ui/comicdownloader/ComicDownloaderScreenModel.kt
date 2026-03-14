@@ -121,8 +121,7 @@ class ComicDownloaderScreenModel(
     }
 
     private suspend fun startImportAndDownload(comicList: ComicList) {
-        val mangaId = importManager.importCbl(comicList)
-
+        // Create queue items for each book
         val queueItems = comicList.books.map { book ->
             DownloadQueueItem(
                 bookKey = "${book.series} #${book.number}",
@@ -138,21 +137,35 @@ class ComicDownloaderScreenModel(
             )
         }
 
-        comicList.books.forEach { book ->
-            val key = "${book.series} #${book.number}"
-            updateQueueItem(key) { it.copy(status = "downloading") }
+        // Group books by series name (search once per series, not per issue)
+        val seriesGroups = comicList.books.groupBy { it.series }
+
+        for ((series, books) in seriesGroups) {
+            // Mark all issues for this series as "searching"
+            books.forEach { book ->
+                val key = "${book.series} #${book.number}"
+                updateQueueItem(key) { it.copy(status = "searching") }
+            }
 
             try {
-                importManager.downloadIssue(
-                    mangaId = mangaId,
-                    comicBook = book,
-                    mangaFolderName = comicList.folderName,
-                ) { _, progress ->
-                    updateQueueItem(key) { it.copy(progress = progress) }
+                val issueNumbers = books.map { it.number }
+                val matchedIssues = importManager.importAndDownloadSeries(series, issueNumbers)
+
+                // Update queue items based on which issues were matched
+                books.forEach { book ->
+                    val key = "${book.series} #${book.number}"
+                    if (book.number in matchedIssues) {
+                        updateQueueItem(key) { it.copy(status = "done", progress = 100) }
+                    } else {
+                        updateQueueItem(key) { it.copy(status = "failed", error = "Chapter not found in source") }
+                    }
                 }
-                updateQueueItem(key) { it.copy(status = "done") }
             } catch (e: Exception) {
-                updateQueueItem(key) { it.copy(status = "failed", error = e.message ?: "Failed") }
+                // Mark all issues for this series as failed
+                books.forEach { book ->
+                    val key = "${book.series} #${book.number}"
+                    updateQueueItem(key) { it.copy(status = "failed", error = e.message ?: "Failed") }
+                }
             }
         }
     }
@@ -186,7 +199,7 @@ data class DownloadQueueItem(
     val bookKey: String,
     val series: String,
     val issueNumber: String,
-    val status: String, // "pending", "downloading", "done", "failed"
+    val status: String, // "pending", "searching", "done", "failed"
     val progress: Int = 0,
     val error: String = "",
 )

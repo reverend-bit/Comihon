@@ -2,12 +2,15 @@ package eu.kanade.tachiyomi.ui.comicdownloader
 
 import android.content.Context
 import android.util.Log
+import eu.kanade.domain.chapter.interactor.SyncChaptersWithSource
 import eu.kanade.domain.manga.interactor.UpdateManga
+import eu.kanade.tachiyomi.data.download.DownloadManager
 import eu.kanade.tachiyomi.source.CatalogueSource
 import eu.kanade.tachiyomi.source.model.FilterList
-import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
-import eu.kanade.tachiyomi.source.online.HttpSource
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
@@ -18,20 +21,17 @@ import okhttp3.Request
 import tachiyomi.domain.category.interactor.CreateCategoryWithName
 import tachiyomi.domain.category.interactor.SetMangaCategories
 import tachiyomi.domain.category.repository.CategoryRepository
+import tachiyomi.domain.chapter.interactor.GetChaptersByMangaId
 import tachiyomi.domain.chapter.model.Chapter
-import tachiyomi.domain.chapter.repository.ChapterRepository
+import tachiyomi.domain.manga.interactor.GetManga
 import tachiyomi.domain.manga.interactor.NetworkToLocalManga
 import tachiyomi.domain.manga.model.MangaUpdate
 import tachiyomi.domain.source.service.SourceManager
-import tachiyomi.domain.storage.service.StorageManager
-import tachiyomi.source.local.LocalSource
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 import java.io.File
 import java.io.InputStream
 import java.util.concurrent.TimeUnit
-import java.util.zip.ZipEntry
-import java.util.zip.ZipOutputStream
 import javax.xml.parsers.DocumentBuilderFactory
 import kotlin.math.abs
 
@@ -397,86 +397,50 @@ class RepoManager(context: Context) {
 
 /**
  * Searches installed Mihon sources for a matching manga series.
+ * Uses Mihon's source search in parallel across all online sources,
+ * searching by series name only (not issue number).
  */
 class MihonComicSearcher(private val sourceManager: SourceManager = Injekt.get()) {
 
-    suspend fun findBestMatch(series: String, issueNumber: String): Pair<CatalogueSource, SManga>? {
-        val sources = sourceManager.getCatalogueSources()
-        for (source in sources) {
-            try {
-                // Use search with exact match if possible
-                val page = source.getSearchManga(1, series, FilterList())
-                val match = page.mangas.find { it.title.equals(series, ignoreCase = true) }
-                    ?: page.mangas.firstOrNull()
-                    ?: continue
-                return Pair(source, match)
-            } catch (e: Exception) {
-                Log.w(TAG, "Source ${source.name} failed for '$series': ${e.message}")
-            }
-        }
-        return null
-    }
+    suspend fun findBestMatch(series: String): Pair<CatalogueSource, SManga>? {
+        val sources = sourceManager.getOnlineSources()
+        if (sources.isEmpty()) return null
 
-    suspend fun getMatchingChapter(source: CatalogueSource, sManga: SManga, issueNumber: String): SChapter? {
-        return try {
-            val chapters = source.getChapterList(sManga)
-            val targetNumber = issueNumber.toFloatOrNull() ?: return chapters.firstOrNull()
-            chapters.minByOrNull { abs(it.chapter_number - targetNumber) }
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to get chapters for ${sManga.title}: ${e.message}")
-            null
-        }
-    }
-}
-
-/**
- * Downloads a comic issue and packages it as a CBZ in LocalSource's directory.
- */
-class LocalComicDownloader(private val storageManager: StorageManager = Injekt.get()) {
-
-    suspend fun downloadIssueToLocalSource(
-        source: HttpSource,
-        sManga: SManga,
-        sChapter: SChapter,
-        mangaFolderName: String,
-        chapterName: String,
-        onProgress: (Int) -> Unit,
-    ): Boolean {
-        return try {
-            val localSourceDir = storageManager.getLocalSourceDirectory() ?: return false
-            val mangaDir = localSourceDir.createDirectory(mangaFolderName) ?: return false
-
-            val pages = source.getPageList(sChapter)
-            if (pages.isEmpty()) return false
-
-            val zipFile = mangaDir.createFile("$chapterName.cbz") ?: return false
-            zipFile.openOutputStream().use { fos ->
-                ZipOutputStream(fos).use { zos ->
-                    pages.forEachIndexed { idx, page ->
-                        source.getImage(page).use { response ->
-                            if (!response.isSuccessful) {
-                                throw IllegalStateException("Failed to download image for page ${idx + 1}: HTTP ${response.code}")
-                            }
-                            val bytes = response.body.bytes()
-                            val ext = if (response.header("Content-Type")?.contains("png") == true) "png" else "jpg"
-                            zos.putNextEntry(ZipEntry(String.format("%03d.%s", idx + 1, ext)))
-                            zos.write(bytes)
-                            zos.closeEntry()
-                        }
-                        onProgress((idx + 1) * 100 / pages.size)
+        // Search all online sources in parallel (like Mihon's global search)
+        val results = coroutineScope {
+            sources.map { source ->
+                async {
+                    try {
+                        val page = source.getSearchManga(1, series, FilterList())
+                        page.mangas.map { manga -> (source as CatalogueSource) to manga }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Source ${source.name} failed for '$series': ${e.message}")
+                        emptyList()
                     }
                 }
-            }
-            true
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to download '$chapterName': ${e.message}", e)
-            throw e // Re-throw to be caught by the manager and show failure
+            }.awaitAll().flatten()
         }
+
+        if (results.isEmpty()) return null
+
+        // Prioritize exact title match (case-insensitive)
+        results.find { (_, manga) ->
+            manga.title.equals(series, ignoreCase = true)
+        }?.let { return it }
+
+        // Then try contains match
+        results.find { (_, manga) ->
+            manga.title.contains(series, ignoreCase = true)
+        }?.let { return it }
+
+        // Fall back to first result
+        return results.first()
     }
 }
 
 /**
- * Manages importing CBL comic lists into Mihon's database and downloading issues.
+ * Manages importing CBL comic lists into Mihon's library and downloading issues
+ * using Mihon's native search and download systems.
  */
 class CBLImportManager(context: Context) {
 
@@ -485,10 +449,12 @@ class CBLImportManager(context: Context) {
     private val setMangaCategories: SetMangaCategories = Injekt.get()
     private val createCategoryWithName: CreateCategoryWithName = Injekt.get()
     private val categoryRepository: CategoryRepository = Injekt.get()
-    private val chapterRepository: ChapterRepository = Injekt.get()
+    private val downloadManager: DownloadManager = Injekt.get()
+    private val syncChaptersWithSource: SyncChaptersWithSource = Injekt.get()
+    private val getChaptersByMangaId: GetChaptersByMangaId = Injekt.get()
+    private val getManga: GetManga = Injekt.get()
 
     private val searcher = MihonComicSearcher()
-    private val downloader = LocalComicDownloader()
 
     private var cachedCategoryId: Long? = null
 
@@ -522,90 +488,94 @@ class CBLImportManager(context: Context) {
         return created.id
     }
 
-    suspend fun importCbl(comicList: ComicList): Long {
+    /**
+     * Searches for a series using Mihon's search, adds the manga to the library,
+     * syncs chapters from the source, and queues matching issues for download
+     * using Mihon's download manager.
+     *
+     * @param series the series name to search for (without issue number)
+     * @param issueNumbers the specific issue numbers needed from this series
+     * @return the set of issue numbers that were successfully matched and queued
+     */
+    suspend fun importAndDownloadSeries(
+        series: String,
+        issueNumbers: List<String>,
+    ): Set<String> {
         val categoryId = ensureCategory()
-        val mangaFolderName = sanitizeFolderName(comicList.folderName)
 
-        val sManga = SManga.create().apply {
-            url = mangaFolderName
-            title = comicList.folderName
-            initialized = true
+        // 1. Search for the series using Mihon's search (just the series name)
+        val (source, sManga) = seriesSourceCache.getOrPut(series) {
+            searcher.findBestMatch(series)
+        } ?: run {
+            Log.w(TAG, "No source match for series '$series'")
+            return emptySet()
         }
 
-        val inserted = networkToLocalManga.invoke(sManga.toDomainManga(LocalSource.ID))
-        val mangaId = inserted.id
+        // 2. Get full manga details and save to DB
+        val detailedManga = try {
+            source.getMangaDetails(sManga)
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to get details for '${sManga.title}': ${e.message}")
+            sManga
+        }
 
+        val domainManga = networkToLocalManga(detailedManga.toDomainManga(source.id))
+        val mangaId = domainManga.id
+
+        // Update with full details from source
+        updateManga.awaitUpdateFromSource(domainManga, detailedManga, manualFetch = false)
+
+        // Set as favorite and assign to "Comic Downloader" category
         updateManga.await(
             MangaUpdate(
                 id = mangaId,
                 favorite = true,
                 dateAdded = System.currentTimeMillis(),
-                initialized = true,
             ),
         )
-
-        val chapters = comicList.books.mapIndexed { index, book ->
-            val chapterName = "${book.series} #${book.number}"
-            Chapter(
-                id = -1L,
-                mangaId = mangaId,
-                read = false,
-                bookmark = false,
-                lastPageRead = 0L,
-                dateFetch = System.currentTimeMillis(),
-                sourceOrder = index.toLong(),
-                url = "$mangaFolderName/$chapterName.cbz",
-                name = chapterName,
-                dateUpload = System.currentTimeMillis(), // Set current time to avoid N/A
-                chapterNumber = book.number.toDoubleOrNull() ?: -1.0,
-                scanlator = null,
-                lastModifiedAt = System.currentTimeMillis(),
-                version = 0L,
-            )
-        }
-        chapterRepository.addAll(chapters)
-
         setMangaCategories.await(mangaId, listOf(categoryId))
 
-        return mangaId
-    }
+        // 3. Sync chapters from source using Mihon's chapter sync
+        val sourceChapters = source.getChapterList(sManga)
+        val refreshedManga = getManga.await(mangaId) ?: domainManga
+        syncChaptersWithSource.await(sourceChapters, refreshedManga, source)
 
-    suspend fun downloadIssue(
-        mangaId: Long,
-        comicBook: ComicBook,
-        mangaFolderName: String,
-        onProgress: (String, Int) -> Unit,
-    ): Boolean {
-        val chapterName = "${comicBook.series} #${comicBook.number}"
+        // 4. Find matching chapters for the needed issue numbers
+        val dbChapters = getChaptersByMangaId.await(mangaId)
+        val matchedIssues = mutableSetOf<String>()
+        val chaptersToDownload = mutableListOf<Chapter>()
 
-        // Use cache to avoid redundant searches for the same series
-        val (catalogueSource, sManga) = seriesSourceCache.getOrPut(comicBook.series) {
-            searcher.findBestMatch(comicBook.series, comicBook.number)
-        } ?: run {
-            Log.w(TAG, "No source match for '$chapterName'")
-            return false
+        for (issueNumber in issueNumbers) {
+            val chapter = findMatchingChapter(dbChapters, issueNumber)
+            if (chapter != null) {
+                chaptersToDownload.add(chapter)
+                matchedIssues.add(issueNumber)
+            } else {
+                Log.w(TAG, "No matching chapter for '$series' #$issueNumber")
+            }
         }
 
-        val sChapter = searcher.getMatchingChapter(catalogueSource, sManga, comicBook.number)
-            ?: run {
-                Log.w(TAG, "No chapter match for '$chapterName'")
-                return false
-            }
-        val httpSource = catalogueSource as? HttpSource
-            ?: run {
-                Log.w(TAG, "Source for '$chapterName' is not an HttpSource")
-                return false
-            }
-        return downloader.downloadIssueToLocalSource(
-            source = httpSource,
-            sManga = sManga,
-            sChapter = sChapter,
-            mangaFolderName = mangaFolderName,
-            chapterName = chapterName,
-            onProgress = { progress -> onProgress(chapterName, progress) },
-        )
+        // 5. Download matched chapters using Mihon's download manager
+        if (chaptersToDownload.isNotEmpty()) {
+            val latestManga = getManga.await(mangaId) ?: refreshedManga
+            downloadManager.downloadChapters(latestManga, chaptersToDownload.distinct())
+        }
+
+        return matchedIssues
     }
 
-    private fun sanitizeFolderName(name: String): String =
-        name.replace(Regex("[\\\\/:*?\"<>|]"), "_").trim()
+    private fun findMatchingChapter(
+        dbChapters: List<Chapter>,
+        issueNumber: String,
+    ): Chapter? {
+        val targetNumber = issueNumber.toDoubleOrNull()
+        return if (targetNumber != null) {
+            // Find chapter with closest matching number (within threshold of 0.5)
+            val bestMatch = dbChapters.minByOrNull { abs(it.chapterNumber - targetNumber) }
+            bestMatch?.takeIf { abs(it.chapterNumber - targetNumber) < 0.5 }
+        } else {
+            // Fallback: try matching by name containing the issue number
+            dbChapters.find { it.name.contains("#$issueNumber", ignoreCase = true) }
+        }
+    }
 }
