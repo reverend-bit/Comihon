@@ -5,6 +5,7 @@ import android.net.Uri
 import androidx.compose.runtime.Immutable
 import cafe.adriel.voyager.core.model.StateScreenModel
 import cafe.adriel.voyager.core.model.screenModelScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.map
@@ -22,6 +23,7 @@ class ComicDownloaderScreenModel(
 
     private val repoManager = RepoManager(context)
     private val importManager = CBLImportManager(context)
+    private var downloadJob: Job? = null
 
     init {
         mutableState.update { it.copy(repositories = repoManager.getSavedRepos()) }
@@ -76,7 +78,7 @@ class ComicDownloaderScreenModel(
 
     /** Import a CBL file selected from the device (local file picker). */
     fun importCblFromLocalFile(uri: Uri) {
-        screenModelScope.launchIO {
+        downloadJob = screenModelScope.launchIO {
             mutableState.update { it.copy(isLoading = true, error = null) }
             try {
                 val stream = context.contentResolver.openInputStream(uri)
@@ -91,7 +93,7 @@ class ComicDownloaderScreenModel(
 
     /** Import a CBL file from a GitHub repository. */
     fun importAndDownloadCbl(repoUrl: String, fileName: String) {
-        screenModelScope.launchIO {
+        downloadJob = screenModelScope.launchIO {
             mutableState.update { it.copy(isLoading = true, error = null) }
             try {
                 val comicList = repoManager.importCblFromRepository(repoUrl, fileName)
@@ -149,6 +151,12 @@ class ComicDownloaderScreenModel(
 
     fun clearError() {
         mutableState.update { it.copy(error = null) }
+    }
+
+    fun clearQueue() {
+        downloadJob?.cancel()
+        downloadJob = null
+        mutableState.update { it.copy(downloadQueue = emptyList()) }
     }
 
     @Immutable

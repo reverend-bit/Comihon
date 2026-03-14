@@ -423,7 +423,11 @@ private fun MangaScreenSmallImpl(
                         contentType = MangaScreenItem.CHAPTER_HEADER,
                     ) {
                         val missingChapterCount = remember(chapters) {
-                            chapters.map { it.chapter.chapterNumber }.missingChaptersCount()
+                            if (state.manga.isLocal()) {
+                                0
+                            } else {
+                                chapters.map { it.chapter.chapterNumber }.missingChaptersCount()
+                            }
                         }
                         ChapterHeader(
                             enabled = !isAnySelected,
@@ -660,7 +664,11 @@ fun MangaScreenLargeImpl(
                                 contentType = MangaScreenItem.CHAPTER_HEADER,
                             ) {
                                 val missingChapterCount = remember(chapters) {
-                                    chapters.map { it.chapter.chapterNumber }.missingChaptersCount()
+                                    if (state.manga.isLocal()) {
+                                        0
+                                    } else {
+                                        chapters.map { it.chapter.chapterNumber }.missingChaptersCount()
+                                    }
                                 }
                                 ChapterHeader(
                                     enabled = !isAnySelected,
@@ -756,7 +764,9 @@ private fun LazyListScope.sharedChapterItems(
 
         when (item) {
             is ChapterList.MissingCount -> {
-                MissingChapterCountListItem(count = item.count)
+                if (!manga.isLocal()) {
+                    MissingChapterCountListItem(count = item.count)
+                }
             }
             is ChapterList.Item -> {
                 MangaChapterListItem(
