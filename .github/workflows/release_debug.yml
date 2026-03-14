@@ -1,0 +1,47 @@
+name: Build & Release Debug APK
+
+on:
+  push:
+    branches:
+      - 'copilot/**'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build Debug APK
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up JDK
+        uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
+        with:
+          java-version: 17
+          distribution: temurin
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@0723195856401067f7a2779048b490ace7a47d7c # v5.0.2
+        with:
+          cache-read-only: false
+
+      - name: Build debug APK
+        run: ./gradlew assembleDebug
+
+      - name: Generate version.txt
+        run: ./gradlew generateVersionTxt
+
+      - name: Release Debug APK
+        uses: glenfordham/action-release-debugapk@37b414425bf40655d62b54314101edf8944420a5 # v0.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APP_FOLDER: app
+          RELEASE_TITLE: Comihon Debug Build
