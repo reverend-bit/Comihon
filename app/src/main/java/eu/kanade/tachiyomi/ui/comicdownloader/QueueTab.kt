@@ -24,8 +24,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import cafe.adriel.voyager.core.screen.Screen
+import eu.kanade.presentation.components.AppBar
 import eu.kanade.presentation.components.TabContent
+import kotlinx.collections.immutable.persistentListOf
 import tachiyomi.i18n.MR
+import tachiyomi.presentation.core.i18n.stringResource
 import tachiyomi.presentation.core.screens.EmptyScreen
 
 @Composable
@@ -34,6 +37,16 @@ fun Screen.queueTab(screenModel: ComicDownloaderScreenModel): TabContent {
 
     return TabContent(
         titleRes = MR.strings.label_comic_downloader_queue,
+        actions = if (state.downloadQueue.isNotEmpty()) {
+            persistentListOf(
+                AppBar.OverflowAction(
+                    title = stringResource(MR.strings.action_cancel_all),
+                    onClick = { screenModel.clearQueue() },
+                ),
+            )
+        } else {
+            persistentListOf()
+        },
         content = { contentPadding, _ ->
             if (state.downloadQueue.isEmpty()) {
                 EmptyScreen(
